@@ -1,6 +1,6 @@
 # Feature_CRF_AE
 
-`Feature_CRF_AE` provides a implementation of [Bridging Pre-trained Language Models and Hand-crafted Features for Unsupervised POS Tagging](https://arxiv.org/abs/?):
+`Feature_CRF_AE` provides a implementation of [Bridging Pre-trained Language Models and Hand-crafted Features for Unsupervised POS Tagging](hlt.suda.edu.cn/LA/papers/acl-findings-hqzhou-bridging.pdf):
 
 ```bib
 @inproceedings{zhou-etal-2022-Bridging,
@@ -54,7 +54,8 @@ The corresponding data and ELMo models can be download as follows:
 ```sh
 # 1) UD data and ELMo models:
 $ bash scripts/prepare_data.sh
-# 2) UD data, ELMo models as well as WSJ data
+# 2) UD data, ELMo models as well as WSJ data 
+#    [please replace ~/treebank3/parsed/mrg/wsj/ with your path to LDC99T42]
 $ bash scripts/prepare_data.sh ~/treebank3/parsed/mrg/wsj/
 ```
 
