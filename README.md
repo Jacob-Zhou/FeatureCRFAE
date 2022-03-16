@@ -1,6 +1,6 @@
 # Feature_CRF_AE
 
-`Feature_CRF_AE` provides a implementation of [Bridging Pre-trained Language Models and Hand-crafted Features for Unsupervised POS Tagging](hlt.suda.edu.cn/LA/papers/acl-findings-hqzhou-bridging.pdf):
+`Feature_CRF_AE` provides a implementation of [Bridging Pre-trained Language Models and Hand-crafted Features for Unsupervised POS Tagging](http://hlt.suda.edu.cn/LA/papers/acl-findings-hqzhou-bridging.pdf):
 
 ```bib
 @inproceedings{zhou-etal-2022-Bridging,
