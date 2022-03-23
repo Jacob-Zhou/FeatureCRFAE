@@ -1,2 +1,2 @@
-from .crf import CRFAE
-from .feature_hmm import FeatureHMM
+from .crf_ae import CRFAE
+from .hmm import FeatureHMM, VanillaHMM, GaussianHMM

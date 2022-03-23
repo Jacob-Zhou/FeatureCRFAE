@@ -1,6 +1,6 @@
 import argparse
 
-from tagger.builders.hmm_builder import FeatureHMMBuilder
+from tagger.builders.hmm_builder import GaussianHMMBuilder
 from tagger.cmds.cmd import parse
 from tagger.utils.logging import get_logger
 
@@ -10,27 +10,18 @@ logger = get_logger(__name__)
 def main():
     parser = argparse.ArgumentParser(
         description='Create first-order CRF Dependency Parser.')
-    parser.set_defaults(Builder=FeatureHMMBuilder)
+    parser.set_defaults(Builder=GaussianHMMBuilder)
 
-    parser.add_argument('--feat-min-freq',
-                        default=50,
+    parser.add_argument('--min-freq',
+                        default=0,
                         type=int,
-                        help='max num of buckets to use')
+                        help='min num of word freq')
     parser.add_argument('--ud-mode', action="store_true")
-    parser.add_argument('--ud-feature', action="store_true")
-    parser.add_argument('--replace-punct', action="store_true")
+    parser.add_argument('--plm', default=None, help='path to evaluate file')
+    parser.add_argument('--embed', default=None, help='path to evaluate file')
     parser.add_argument('--ignore-capitalized',
                         action="store_true",
                         help='random init CRF-AE model')
-    parser.add_argument('--language-specific-strip',
-                        action="store_true",
-                        help='random init CRF-AE model')
-    parser.add_argument('--language',
-                        default="en",
-                        help='path to evaluate file')
-    parser.add_argument('--without-feature',
-                        action="store_true",
-                        help='do not use feature')
 
     subparsers = parser.add_subparsers(title='Commands', dest='mode')
     # arguments for train

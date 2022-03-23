@@ -2,6 +2,7 @@ import argparse
 
 from tagger.builders.crf_ae_builder import CRFAEBuilder
 from tagger.cmds.cmd import parse
+from tagger.utils.fn import none_or_str
 from tagger.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -66,10 +67,12 @@ def main():
                            '-b',
                            action="store_true",
                            help='whether to build the model first')
-    subparser.add_argument('--rand-init',
-                           action="store_true",
+    subparser.add_argument('--init-model',
+                           default='feature-hmm',
+                           type=none_or_str,
+                           choices=[None, 'feature-hmm', 'gaussian-hmm'],
                            help='random init CRF-AE model')
-    subparser.add_argument('--feature-hmm-path',
+    subparser.add_argument('--hmm-path',
                            default=None,
                            help='path to evaluate file')
     subparser.add_argument('--hmm-epochs',

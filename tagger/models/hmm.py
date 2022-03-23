@@ -1,21 +1,15 @@
 import torch
 import torch.nn as nn
-from tagger.modules import FeatureScorer
+from tagger.modules import FeatureScorer, GaussianScorer
+from tagger.modules.elmo import Elmo
 from tagger.utils.config import Config
 
 
-class FeatureHMM(nn.Module):
-    def __init__(self, features=None, **kwargs):
-        super(FeatureHMM, self).__init__()
+class HMM(nn.Module):
+
+    def __init__(self, **kwargs):
+        super(HMM, self).__init__()
         self.args = args = Config().update(locals())
-
-        # features compute emits
-        if args.without_feature or features is not None:
-            self.features = features
-        else:
-            raise RuntimeError('Both features is None when we need features')
-
-        self.feature_scorer = FeatureScorer(args, features)
 
         # t
         self.start = nn.Parameter(torch.randn(args.n_labels))
@@ -38,7 +32,7 @@ class FeatureHMM(nn.Module):
         Returns:
 
         """
-        emits = self.feature_scorer(words)
+        emits = self.scorer(words)
         start = torch.log_softmax(self.start, dim=-1)
         transitions = torch.log_softmax(self.transitions, dim=-1)
         end = torch.log_softmax(self.end, dim=-1)
@@ -65,8 +59,8 @@ class FeatureHMM(nn.Module):
 
         for i in range(1, seq_len):
             # [batch_size, n_labels, 1] + [1, n_labels, n_labels] + [batch_size, 1, n_labels]
-            score = log_score.unsqueeze(-1) + transitions.unsqueeze(
-                0) + emits[:, i].unsqueeze(1)
+            score = (log_score.unsqueeze(-1) + transitions.unsqueeze(0) +
+                     emits[:, i].unsqueeze(1))
             log_score[mask[:, i]] = torch.logsumexp(score, dim=1)[mask[:, i]]
 
         # end
@@ -99,8 +93,8 @@ class FeatureHMM(nn.Module):
 
         for i in range(1, seq_len):
             # [batch_size, n_labels, 1] + [batch_size, n_labels, n_labels] => [batch_size, n_labels, n_labels]
-            temp_score = score.unsqueeze(-1) + transitions.unsqueeze(
-                0) + emits[:, i].unsqueeze(1)
+            temp_score = (score.unsqueeze(-1) + transitions.unsqueeze(0) +
+                          emits[:, i].unsqueeze(1))
             # [batch_size, n_labels]
             temp_score, path[:, i] = torch.max(temp_score, dim=1)
             score[mask[:, i]] = temp_score[mask[:, i]]
@@ -122,3 +116,73 @@ class FeatureHMM(nn.Module):
             pre_tags = torch.gather(path[:, i], 1, pre_tags)
             tags[:, j] = pre_tags.squeeze()
         return tags
+
+
+class VanillaHMM(HMM):
+
+    def __init__(self, **kwargs):
+        super(VanillaHMM, self).__init__(**kwargs)
+
+        self.scorer = FeatureScorer(self.args, None)
+
+
+class FeatureHMM(HMM):
+
+    def __init__(self, features=None, **kwargs):
+        super(FeatureHMM, self).__init__(features=features, **kwargs)
+
+        # features compute emits
+        if self.args.without_feature or features is not None:
+            self.features = features
+        else:
+            raise RuntimeError("Both features is None when we need features")
+
+        self.scorer = FeatureScorer(self.args, features)
+
+
+class GaussianHMM(HMM):
+
+    def __init__(self, n_embed, embed=None, **kwargs):
+        super(GaussianHMM, self).__init__(n_embed=n_embed,
+                                          embed=embed,
+                                          **kwargs)
+
+        self.scorer = GaussianScorer(self.args, n_embed)
+
+        if embed is not None:
+            self.encoder = nn.Embedding.from_pretrained(embed)
+        else:
+            # using context-free word representations of ELMo
+            self.encoder = Elmo(
+                layer=0,
+                dropout=0.0,
+                backbone="HIT" if self.args.ud_mode else "AllenNLP",
+                model_path=self.args.plm,
+                fd_repr=False,
+            )
+        self.encoder.requires_grad_(False)
+        self.start.requires_grad_(False)
+        self.end.requires_grad_(False)
+
+    def init_params(self, means, var):
+        self.scorer.init_params(means, var)
+        self.start.data.zero_()
+        self.end.data.zero_()
+        self.transitions.data.uniform_()
+
+    def forward(self, words):
+        """
+
+        Args:
+            words (torch.Tensor): [batch_size, seq_len]
+
+        Returns:
+
+        """
+        embeddings = self.encoder(words)
+        emits = self.scorer(embeddings)
+        start = torch.log_softmax(self.start, dim=-1)
+        transitions = torch.log_softmax(self.transitions, dim=-1)
+        # remove ``end'' for GaussianHMM
+        end = torch.zeros_like(self.end.data)
+        return emits, start, transitions, end

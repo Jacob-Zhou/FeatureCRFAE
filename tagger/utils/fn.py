@@ -57,11 +57,12 @@ def pad(tensors, padding_value=0, total_length=None, padding_side='right'):
         ]] = tensor
     return out_tensor
 
+def get_masks(sequence):
+    return [1] * len(sequence)
 
 @lru_cache(maxsize=1024)
 def replace_digit(token):
     return re.sub(r"[0-9]+", '0', token)
-
 
 def replace_digit_fn(sequence):
     return [replace_digit(token) for token in sequence]
@@ -78,6 +79,10 @@ def preprocess_hmm_fn(sequence, language=None, language_specific_strip=False, re
         new_seq.append(token)
     return new_seq
 
+def none_or_str(value):
+    if value in ['None', 'NONE', 'none', 'null']:
+        return None
+    return value
 
 def heatmap(corr, labels=None, name='matrix', match=None):
     sns.set(style="white")

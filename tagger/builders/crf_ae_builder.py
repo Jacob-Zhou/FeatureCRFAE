@@ -6,13 +6,21 @@ from functools import partial
 import torch
 import torch.nn as nn
 from tagger.builders.builder import Builder
-from tagger.builders.feature_hmm_builder import FeatureHMMBuilder
+from tagger.builders.hmm_builder import FeatureHMMBuilder, GaussianHMMBuilder
 from tagger.models import CRFAE, FeatureHMM
+from tagger.models.hmm import GaussianHMM
 from tagger.utils.common import bos, eos, pad, unk
 from tagger.utils.config import Config
-from tagger.utils.data import (CoNLL, Dataset, ElmoField, Embedding,
-                               FeatureField, Field, SubwordField)
-from tagger.utils.fn import heatmap, preprocess_hmm_fn
+from tagger.utils.data import (
+    CoNLL,
+    Dataset,
+    ElmoField,
+    Embedding,
+    FeatureField,
+    Field,
+    SubwordField,
+)
+from tagger.utils.fn import get_masks, heatmap, preprocess_hmm_fn
 from tagger.utils.logging import get_logger, init_logger, progress_bar
 from tagger.utils.metric import Metric, UnsupervisedPOSMetric
 from torch.optim import Adam
@@ -22,14 +30,14 @@ logger = get_logger(__name__)
 
 
 class CRFAEBuilder(Builder):
-    NAME = 'crf-ae'
+    NAME = "crf-ae"
     MODEL = CRFAE
     FILE_NAME = "crfae"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.FEAT, self.WORD, self.CHAR = self.fields.FORM
+        self.FEAT, self.WORD, self.CHAR, self.MASK = self.fields.FORM
         self.LABEL = self.fields.CPOS
 
     @classmethod
@@ -56,23 +64,30 @@ class CRFAEBuilder(Builder):
         # fields
         # word field
         logger.info("Building the fields")
-        WORD = Field('words', pad=pad, unk=unk, bos=bos, eos=eos, lower=True)
+        WORD = Field("words",
+                     pad=pad,
+                     unk=unk,
+                     bos=bos,
+                     eos=eos,
+                     lower=args.ignore_capitalized)
 
         # reconstruct field
         if args.without_feature:
             FEAT = Field(
-                'feats',
+                "feats",
                 pad=pad,
                 unk=unk,
                 fn=partial(
                     preprocess_hmm_fn,
                     language=args.language,
                     language_specific_strip=args.language_specific_strip,
-                    replace_punct=replace_punct),
-                lower=args.ignore_capitalized)
+                    replace_punct=replace_punct,
+                ),
+                lower=args.ignore_capitalized,
+            )
         else:
             FEAT = FeatureField(
-                'feats',
+                "feats",
                 pad=pad,
                 unk=unk,
                 replace_mode=args.language
@@ -80,26 +95,30 @@ class CRFAEBuilder(Builder):
                 replace_punct=replace_punct,
                 ud_feature_templates=ud_feature,
                 language_specific_strip=args.language_specific_strip,
-                lower=args.ignore_capitalized)
+                lower=args.ignore_capitalized,
+            )
 
         # label field
-        LABEL = Field('labels')
+        LABEL = Field("labels")
         # char field
         if args.encoder == "elmo":
             CHAR = ElmoField("chars",
                              backbone="HIT" if ud_mode else "AllenNLP")
         elif args.encoder == "bert":
             from transformers import AutoTokenizer
+
             t = AutoTokenizer.from_pretrained(args.plm)
-            CHAR = SubwordField("chars",
-                                bos=t.cls_token,
-                                eos=t.sep_token,
-                                pad=t.pad_token,
-                                unk=t.unk_token,
-                                fix_len=args.fix_len,
-                                tokenize=t.tokenize)
+            CHAR = SubwordField(
+                "chars",
+                bos=t.cls_token,
+                eos=t.sep_token,
+                pad=t.pad_token,
+                unk=t.unk_token,
+                fix_len=args.fix_len,
+                tokenize=t.tokenize,
+            )
         elif args.encoder == "lstm":
-            CHAR = SubwordField('chars',
+            CHAR = SubwordField("chars",
                                 pad=pad,
                                 unk=unk,
                                 bos=bos,
@@ -107,15 +126,18 @@ class CRFAEBuilder(Builder):
                                 fix_len=args.fix_len)
         else:
             raise NotImplementedError
-        fields = CoNLL(FORM=(FEAT, WORD, CHAR), CPOS=LABEL)
+        MASK = Field("masks", use_vocab=False, fn=get_masks)
+        fields = CoNLL(FORM=(FEAT, WORD, CHAR, MASK), CPOS=LABEL)
 
         # load dataset
         train = Dataset(fields, args.train)
 
         # build vocab
         WORD.build(
-            train, args.min_freq,
-            (Embedding.load(args.embed, unk='') if args.embed else None))
+            train,
+            args.min_freq,
+            (Embedding.load(args.embed, unk="") if args.embed else None),
+        )
         FEAT.build(train, args.feat_min_freq)
         LABEL.build(train)
         if args.encoder == "bert":
@@ -129,22 +151,25 @@ class CRFAEBuilder(Builder):
             n_labels = 45
 
         args.update({
-            'n_words': WORD.vocab.n_init,
-            'n_chars': len(CHAR.vocab),
-            'n_labels': n_labels,
-            'pad_index': WORD.pad_index,
-            'unk_index': WORD.unk_index,
+            "n_words": WORD.vocab.n_init,
+            "n_chars": len(CHAR.vocab),
+            "n_labels": n_labels,
+            "pad_index": WORD.pad_index,
+            "unk_index": WORD.unk_index,
         })
 
         if not args.without_feature:
             args.update({
-                'n_word_features': FEAT.n_word_features,
-                'n_unigram_features': FEAT.n_unigram_features,
-                'n_bigram_features': FEAT.n_bigram_features,
-                'n_trigram_features': FEAT.n_trigram_features,
-                'n_morphology_features': FEAT.n_morphology_features
+                "n_word_features": FEAT.n_word_features,
+                "n_unigram_features": FEAT.n_unigram_features,
+                "n_bigram_features": FEAT.n_bigram_features,
+                "n_trigram_features": FEAT.n_trigram_features,
+                "n_morphology_features": FEAT.n_morphology_features,
             })
-
+        else:
+            args.update({
+                "n_recons_word": FEAT.vocab.n_init,
+            })
         crf_ae = CRFAE(
             features=None if args.without_feature else FEAT.features, **args)
         if args.encoder == "lstm":
@@ -176,36 +201,41 @@ class CRFAEBuilder(Builder):
             test.build(args.batch_size, n_buckets=args.n_buckets)
             logger.info(f"Test  Dateset {test}")
 
-        logger.info(
-            f"Create the {' ' if args.without_feature else 'Feature '}HMM model\n"
-        )
         total_time = timedelta()
 
-        if not args.rand_init:
+        if args.init_model is not None:
             self.init_params(train, evaluate, test)
         train.reset_loader(args.batch_size, shuffle=True, seed=self.args.seed)
 
         logger.info(f"{self.model}\n")
 
         logger.info("Train CRF AE")
-        params = [{
-            "params": self.model.feature_hmm.parameters(),
-            "lr": args.recons_lr
-        }, {
-            "params": self.model.represent_ln.parameters()
-        }, {
-            "params": self.model.encoder_emit_scorer.parameters()
-        }, {
-            "params": self.model.encoder_emit_ln.parameters()
-        }, {
-            "params": self.model.start
-        }, {
-            "params": self.model.transitions
-        }, {
-            "params": self.model.end
-        }]
+        params = [
+            {
+                "params": self.model.feature_hmm.parameters(),
+                "lr": args.recons_lr
+            },
+            {
+                "params": self.model.represent_ln.parameters()
+            },
+            {
+                "params": self.model.encoder_emit_scorer.parameters()
+            },
+            {
+                "params": self.model.encoder_emit_ln.parameters()
+            },
+            {
+                "params": self.model.start
+            },
+            {
+                "params": self.model.transitions
+            },
+            {
+                "params": self.model.end
+            },
+        ]
 
-        if args.rand_init and self.model.encoder.scalar_mix is not None:
+        if args.init_model is not None and self.model.encoder.scalar_mix is not None:
             params.append(
                 {"params": self.model.encoder.scalar_mix.parameters()})
 
@@ -213,9 +243,13 @@ class CRFAEBuilder(Builder):
                               args.epsilon, args.weight_decay)
 
         # scheduler
-        decay_steps = args.decay_epochs * len(train.loader)
-        self.scheduler = ExponentialLR(self.optimizer,
-                                       args.decay**(1 / decay_steps))
+        if args.decay_epochs > 0:
+            # scheduler
+            decay_steps = args.decay_epochs * len(train.loader)
+            self.scheduler = ExponentialLR(self.optimizer,
+                                           args.decay**(1 / decay_steps))
+        else:
+            self.scheduler = None
 
         best_e, best_metric = 1, Metric()
         min_loss = float("inf")
@@ -236,8 +270,10 @@ class CRFAEBuilder(Builder):
                 list(self.LABEL.vocab.stoi.keys()),
                 os.path.join(
                     self.args.path,
-                    f"dev.{self.FILE_NAME}-{self.args.timestamp}.clusters"),
-                match=dev_metric.match[-1])
+                    f"dev.{self.FILE_NAME}-{self.args.timestamp}.clusters",
+                ),
+                match=dev_metric.match[-1],
+            )
             logger.info(f"{'dev:':10} Loss: {dev_loss:>8.4f} {dev_metric}")
             if test:
                 logger.info(
@@ -272,49 +308,91 @@ class CRFAEBuilder(Builder):
         logger.info(f"{total_time}s elapsed\n")
 
     def init_params(self, train, evaluate, test):
-        if (self.args.feature_hmm_path is None
-                or not os.path.exists(self.args.feature_hmm_path)):
-            feature_hmm_args = copy(self.args)
-            self.args.feature_hmm_path = self.args.path
-            feature_hmm_args.update({
-                'lr': self.args.hmm_lr,
-                'mu': self.args.hmm_mu,
-                'nu': self.args.hmm_nu,
-                'epsilon': self.args.hmm_epsilon,
-                'weight_decay': self.args.hmm_weight_decay,
-                'clip': self.args.hmm_clip,
-                'decay': self.args.hmm_decay,
-                'decay_epochs': self.args.hmm_decay_epochs,
-                'epochs': self.args.epochs,
-                'path': self.args.feature_hmm_path
-            })
-            feature_hmm = FeatureHMM(features=None if self.args.without_feature
-                                     else self.FEAT.features,
-                                     **feature_hmm_args).to(self.args.device)
-            feature_hmm_fields = CoNLL(FORM=self.FEAT, CPOS=self.LABEL)
-            feature_hmm_builder = FeatureHMMBuilder(feature_hmm_args,
-                                                    feature_hmm,
-                                                    feature_hmm_fields)
-            feature_hmm_builder.train(**feature_hmm_args)
-        # load best feature hmm model
-        self.model.feature_hmm = FeatureHMMBuilder.load(
-            self.args.feature_hmm_path).model
+        logger.info(f"Initialize CRF-AE using {self.args.init_model} model")
+        hmm_args = copy(self.args)
+        hmm_args.update({
+            "lr": self.args.hmm_lr,
+            "mu": self.args.hmm_mu,
+            "nu": self.args.hmm_nu,
+            "epsilon": self.args.hmm_epsilon,
+            "weight_decay": self.args.hmm_weight_decay,
+            "clip": self.args.hmm_clip,
+            "decay": self.args.hmm_decay,
+            "decay_epochs": self.args.hmm_decay_epochs,
+            "epochs": self.args.hmm_epochs,
+        })
+        if self.args.init_model == "feature-hmm":
+            if self.args.hmm_path is None or not os.path.exists(
+                    self.args.hmm_path):
+                self.args.hmm_path = self.args.path
+                hmm_args.update({
+                    "path":
+                    self.args.hmm_path,
+                    "features":
+                    None if self.args.without_feature else self.FEAT.features
+                })
+                feature_hmm = FeatureHMM(**hmm_args).to(self.args.device)
+                hmm_fields = CoNLL(FORM=(self.FEAT, self.MASK),
+                                   CPOS=self.LABEL)
+                hmm_builder = FeatureHMMBuilder(hmm_args, feature_hmm,
+                                                hmm_fields)
+                hmm_builder.train(**hmm_args)
+            teacher = FeatureHMMBuilder.load(self.args.hmm_path).model
+            # load best feature hmm model
+            self.model.feature_hmm = teacher
+        elif self.args.init_model == "gaussian-hmm":
+            if self.args.hmm_path is None or not os.path.exists(
+                    self.args.hmm_path):
+                self.args.hmm_path = self.args.path
+                hmm_args.update({
+                    "path":
+                    self.args.hmm_path,
+                    "n_embed": (self.args.n_embed if self.args.encoder
+                                == "lstm" else self.args.n_pretrained),
+                    "embed":
+                    (self.WORD.embed if self.args.encoder == "lstm" else None)
+                })
+                gaussian_hmm = GaussianHMM(**hmm_args).to(self.args.device)
+                if self.args.encoder == "lstm":
+                    WORD = Field("words", pad=pad, unk=unk, lower=True)
+                    WORD.vocab = self.WORD.vocab
+                    WORD.embed = self.WORD.embed
+                    hmm_fields = CoNLL(FORM=(WORD, self.MASK), CPOS=self.LABEL)
+                elif self.args.encoder == "elmo":
+                    hmm_fields = CoNLL(FORM=(self.CHAR, self.MASK),
+                                       CPOS=self.LABEL)
+                else:
+                    raise NotImplementedError
+                hmm_builder = GaussianHMMBuilder(hmm_args, gaussian_hmm,
+                                                 hmm_fields)
+                hmm_builder.train(**hmm_args)
+            teacher = GaussianHMMBuilder.load(self.args.hmm_path).model
+        else:
+            raise NotImplementedError
 
         logger.info("Init CRF-AE parameters")
         # optimizer
-        optimizer = Adam(self.model.parameters(), self.args.init_lr,
-                         (self.args.init_mu, self.args.init_nu),
-                         self.args.init_epsilon, self.args.init_weight_decay)
+        optimizer = Adam(
+            self.model.parameters(),
+            self.args.init_lr,
+            (self.args.init_mu, self.args.init_nu),
+            self.args.init_epsilon,
+            self.args.init_weight_decay,
+        )
         # scheduler
-        decay_steps = self.args.init_decay_epochs * len(train.loader)
-        scheduler = ExponentialLR(optimizer,
-                                  self.args.init_decay**(1 / decay_steps))
+        if self.args.init_decay_epochs > 0:
+            # scheduler
+            decay_steps = self.args.init_decay_epochs * len(train.loader)
+            scheduler = ExponentialLR(optimizer,
+                                      self.args.init_decay**(1 / decay_steps))
+        else:
+            scheduler = None
 
         for epoch in range(1, self.args.init_epochs + 1):
             logger.info(f"Epoch {epoch} / {self.args.init_epochs}:")
             start = datetime.now()
             # train
-            self._init_crf(train.loader, optimizer, scheduler)
+            self._init_crf(train.loader, teacher, optimizer, scheduler)
             time_spent = datetime.now() - start
             logger.info(f"{time_spent}s elapsed\n")
 
@@ -328,57 +406,85 @@ class CRFAEBuilder(Builder):
             list(self.LABEL.vocab.stoi.keys()),
             os.path.join(
                 self.args.path,
-                f"dev.{self.FILE_NAME}-{self.args.timestamp}.init.clusters"),
-            match=dev_metric.match[-1])
+                f"dev.{self.FILE_NAME}-{self.args.timestamp}.init.clusters",
+            ),
+            match=dev_metric.match[-1],
+        )
         logger.info(f"{'CRF init:':10}")
         logger.info(f"{'dev:':10} Loss: {dev_loss:>8.4f} {dev_metric}")
         if test:
             logger.info(f"{'test:':10} Loss: {test_loss:>8.4f} {test_metric}")
 
-    def _init_crf(self, loader, optimizer, scheduler):
+    def _init_crf(self, loader, teacher, optimizer, scheduler):
         self.model.train()
         bar = progress_bar(loader)
-        for feats, words, chars, _ in bar:
-            mask = feats.ne(self.args.pad_index)
+        for feats, words, chars, mask, _ in bar:
+            mask = mask.bool()
             # use feature hmm to generate labels
             with torch.no_grad():
-                emits, start, transitions, end = self.model.feature_hmm(feats)
-                labels = self.model.feature_hmm.decode(emits, start,
-                                                       transitions, end, mask)
+                if self.args.init_model == "feature-hmm":
+                    inputs = feats
+                elif self.args.init_model == "gaussian-hmm":
+                    if self.args.encoder == "lstm":
+                        inputs = words
+                    else:
+                        inputs = chars
+                else:
+                    raise NotImplementedError
+                emits, start, transitions, end = teacher(inputs)
+                labels = teacher.decode(emits, start, transitions, end, mask)
 
             optimizer.zero_grad()
 
             encoder_emits = self.model(words, chars)
+
             # compute loss
-            loss = self.model.crf_loss(encoder_emits, labels, mask)
+            if self.args.init_model == "feature-hmm":
+                # do not tuning decoder part
+                loss = self.model.crf_loss(None, encoder_emits, labels, mask)
+            else:
+                # init decoder part
+                loss = self.model.crf_loss(feats, encoder_emits, labels, mask)
 
             loss.backward()
             #
-            nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip)
+            if self.args.init_clip > 0:
+                nn.utils.clip_grad_norm_(self.model.parameters(),
+                                         self.args.init_clip)
             optimizer.step()
-            scheduler.step()
-            bar.set_postfix_str(
-                f" lr: {scheduler.get_last_lr()[0]:.4e}, loss: {loss.item():>8.4f}"
-            )
+            if scheduler is not None:
+                scheduler.step()
+                bar.set_postfix_str(
+                    f" lr: {scheduler.get_last_lr()[0]:.4e}, loss: {loss.item():>8.4f}"
+                )
+            else:
+                bar.set_postfix_str(
+                    f" lr: {self.args.init_lr:.4e}, loss: {loss.item():>8.4f}")
 
     def _train(self, loader):
         self.model.train()
         bar = progress_bar(loader)
-        for feats, words, chars, _ in bar:
+        for feats, words, chars, mask, _ in bar:
+            mask = mask.bool()
             self.optimizer.zero_grad()
-            mask = feats.ne(self.args.pad_index)
             encoder_emits = self.model(words, chars)
             # compute loss
             loss = self.model.loss(feats, encoder_emits, mask)
 
             loss.backward()
             #
-            nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip)
+            if self.args.clip > 0:
+                nn.utils.clip_grad_norm_(self.model.parameters(),
+                                         self.args.clip)
             self.optimizer.step()
-            self.scheduler.step()
-            bar.set_postfix_str(
-                f" lr: {self.scheduler.get_last_lr()[0]:.4e}, loss: {loss.item():>8.4f}"
-            )
+            if self.scheduler is not None:
+                self.scheduler.step()
+                bar.set_postfix_str(
+                    f" lr: {self.scheduler.get_last_lr()[0]:.4e}, loss: {loss.item():>8.4f}"
+                )
+            else:
+                bar.set_postfix_str(
+                    f" lr: {self.args.lr:.4e}, loss: {loss.item():>8.4f}")
 
     @torch.no_grad()
     def _evaluate(self, loader):
@@ -387,9 +493,9 @@ class CRFAEBuilder(Builder):
         total_loss = 0
         metric = UnsupervisedPOSMetric(self.args.n_labels, self.args.device)
         sent_count = 0
-        for feats, words, chars, labels in loader:
+        for feats, words, chars, mask, labels in loader:
+            mask = mask.bool()
             sent_count += len(words)
-            mask = feats.ne(self.args.pad_index)
             encoder_emits = self.model(words, chars)
             # compute loss
             loss = self.model.loss(feats, encoder_emits, mask)
@@ -406,8 +512,8 @@ class CRFAEBuilder(Builder):
 
         preds = {}
         labels = []
-        for feats, words, chars, _ in progress_bar(loader):
-            mask = feats.ne(self.args.pad_index)
+        for feats, words, chars, mask, _ in progress_bar(loader):
+            mask = mask.bool()
             lens = mask.sum(1).tolist()
             # ignore the first token of each sentence
             encoder_emits = self.model(words, chars)
@@ -415,6 +521,6 @@ class CRFAEBuilder(Builder):
             labels.extend(predicts[mask].split(lens))
 
         labels = [[f"#C{t}#" for t in seq.tolist()] for seq in labels]
-        preds = {'labels': labels}
+        preds = {"labels": labels}
 
         return preds

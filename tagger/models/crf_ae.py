@@ -1,11 +1,12 @@
 import torch
 import torch.nn as nn
-from tagger.models.feature_hmm import FeatureHMM
+from tagger.models.hmm import FeatureHMM
 from tagger.modules import Elmo, LSTMEncoder, Transformer
 from tagger.utils.config import Config
 
 
 class CRFAE(nn.Module):
+
     def __init__(self, feature_hmm=None, features=None, **kwargs):
         """
         use ELMo, CRF auto encoder and feature HMM
@@ -17,11 +18,13 @@ class CRFAE(nn.Module):
         self.args = args = Config().update(locals())
 
         if self.args.encoder == "elmo":
-            self.encoder = Elmo(layer=args.layer,
-                                dropout=args.dropout,
-                                backbone="HIT" if args.ud_mode else "AllenNLP",
-                                model_path=args.plm,
-                                fd_repr=not args.without_fd_repr)
+            self.encoder = Elmo(
+                layer=args.layer,
+                dropout=args.dropout,
+                backbone="HIT" if args.ud_mode else "AllenNLP",
+                model_path=args.plm,
+                fd_repr=not args.without_fd_repr,
+            )
         elif self.args.encoder == "bert":
             self.encoder = Transformer(model=args.plm,
                                        n_layers=args.n_layers,
@@ -52,7 +55,9 @@ class CRFAE(nn.Module):
         else:
             self.encoder_emit_scorer = nn.Sequential(
                 nn.Linear(args.n_pretrained, args.n_bottleneck),
-                nn.LeakyReLU(), nn.Linear(args.n_bottleneck, args.n_labels))
+                nn.LeakyReLU(),
+                nn.Linear(args.n_bottleneck, args.n_labels),
+            )
         self.encoder_emit_ln = nn.LayerNorm(args.n_labels)
         self.start = nn.Parameter(torch.randn((args.n_labels, )))
         self.transitions = nn.Parameter(
@@ -64,7 +69,7 @@ class CRFAE(nn.Module):
             if args.without_feature or features is not None:
                 self.feature_hmm = FeatureHMM(**args)
             else:
-                raise RuntimeError('Both feature_hmm and features is None')
+                raise RuntimeError("Both feature_hmm and features is None")
         else:
             self.feature_hmm = feature_hmm
 
@@ -85,7 +90,7 @@ class CRFAE(nn.Module):
         """
 
         # [batch_size, seq_len, n_elmo]
-        if self.args.encoder in {"elmo", 'bert'}:
+        if self.args.encoder in {"elmo", "bert"}:
             represent = self.encoder(chars)
         else:
             represent = self.encoder(words, chars)
@@ -98,11 +103,11 @@ class CRFAE(nn.Module):
 
         return encoder_emits
 
-    def loss(self, words, encoder_emits, mask):
+    def loss(self, feats, encoder_emits, mask):
         """
 
         Args:
-            words:
+            feats:
             encoder_emits:
             mask:
 
@@ -112,7 +117,7 @@ class CRFAE(nn.Module):
         _, seq_len, _ = encoder_emits.shape
 
         encoder_emits = encoder_emits.double()
-        decoder_emits = self.feature_hmm.feature_scorer(words).double()
+        decoder_emits = self.feature_hmm.scorer(feats).double()
 
         start = self.start.double()
         transitions = self.transitions.double()
@@ -131,8 +136,8 @@ class CRFAE(nn.Module):
             # [batch_size, n_labels, 1] +  [batch_size, n_labels, n_labels]
             alpha_scores = log_alpha.unsqueeze(-1) + crf_scores
             # [batch_size, n_labels, 1] + [batch_size, n_labels, n_labels] + [batch_size, 1, n_labels]
-            beta_scores = log_beta.unsqueeze(
-                -1) + crf_scores + decoder_emits[:, i].unsqueeze(1)
+            beta_scores = (log_beta.unsqueeze(-1) + crf_scores +
+                           decoder_emits[:, i].unsqueeze(1))
 
             log_alpha[mask[:, i]] = torch.logsumexp(alpha_scores,
                                                     dim=1)[mask[:, i]]
@@ -151,7 +156,7 @@ class CRFAE(nn.Module):
 
         return (log_alpha - log_beta).sum().float()
 
-    def crf_loss(self, encoder_emits, labels, mask):
+    def crf_loss(self, feats, encoder_emits, labels, mask):
         """
         compute crf loss to train encoder
 
@@ -165,6 +170,9 @@ class CRFAE(nn.Module):
         """
 
         encoder_emits = encoder_emits.double()
+        if feats is not None:
+            decoder_emits = self.feature_hmm.scorer(feats).double()
+            encoder_emits = encoder_emits + decoder_emits
 
         start = self.start.double()
         transitions = self.transitions.double()
@@ -176,8 +184,8 @@ class CRFAE(nn.Module):
         log_score = start.unsqueeze(0) + encoder_emits[:, 0]
         for i in range(1, seq_len):
             # [batch_size, n_labels, 1] + [1, n_labels, n_labels] + [batch_size, 1, n_labels]
-            score = log_score.unsqueeze(-1) + transitions.unsqueeze(
-                0) + encoder_emits[:, i].unsqueeze(1)
+            score = (log_score.unsqueeze(-1) + transitions.unsqueeze(0) +
+                     encoder_emits[:, i].unsqueeze(1))
             log_score[mask[:, i]] = torch.logsumexp(score, dim=1)[mask[:, i]]
         log_p = torch.logsumexp(log_score + end.unsqueeze(0), dim=-1).sum()
 
@@ -209,7 +217,7 @@ class CRFAE(nn.Module):
         """
         batch_size, seq_len, n_labels = encoder_emits.shape
 
-        decoder_emits = self.feature_hmm.feature_scorer(words)
+        decoder_emits = self.feature_hmm.scorer(words)
 
         start_transitions = self.start
         transitions = self.transitions
@@ -223,14 +231,14 @@ class CRFAE(nn.Module):
 
         # start
         # [batch_size, n_labels]
-        score = start_transitions.unsqueeze(
-            0) + encoder_emits[:, 0] + decoder_emits[:, 0]
+        score = (start_transitions.unsqueeze(0) + encoder_emits[:, 0] +
+                 decoder_emits[:, 0])
 
         for i in range(1, seq_len):
             # [batch_size, n_labels, 1] + [batch_size, n_labels, n_labels] => [batch_size, n_labels, n_labels]
-            temp_score = score.unsqueeze(-1) + transitions.unsqueeze(
-                0) + encoder_emits[:, i].unsqueeze(
-                    1) + decoder_emits[:, i].unsqueeze(1)
+            temp_score = (score.unsqueeze(-1) + transitions.unsqueeze(0) +
+                          encoder_emits[:, i].unsqueeze(1) +
+                          decoder_emits[:, i].unsqueeze(1))
             # [batch_size, n_labels]
             temp_score, path[:, i] = torch.max(temp_score, dim=1)
             score[mask[:, i]] = temp_score[mask[:, i]]
