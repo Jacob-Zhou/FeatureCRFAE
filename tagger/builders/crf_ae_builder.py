@@ -285,7 +285,7 @@ class CRFAEBuilder(Builder):
                 'clip': self.args.hmm_clip,
                 'decay': self.args.hmm_decay,
                 'decay_epochs': self.args.hmm_decay_epochs,
-                'epochs': self.args.epochs,
+                'epochs': self.args.hmm_epochs,
                 'path': self.args.feature_hmm_path
             })
             feature_hmm = FeatureHMM(features=None if self.args.without_feature
